@@ -1,0 +1,176 @@
+---
+title: "Online Retail RFM Segmentation with K-Means"
+author: "Jirawan Phromtawepong"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+  toc: true
+toc_depth: 2
+number_sections: true
+theme: flatly
+---
+
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(purrr)
+library(readxl)
+
+# import data from my computer
+sheet1 <- read_excel("online_retail_II.xlsx", sheet = 1)
+sheet2 <- read_excel("online_retail_II.xlsx", sheet = 2)
+
+retail_all <- bind_rows(sheet1, sheet2)
+
+View(retail_all)
+
+# Preview data structure
+glimpse(retail_all)
+# Preview 5 first row
+head(retail_all)
+
+# change column name for easier process
+
+retail_clean <- retail_all %>%
+  rename(
+    InvoiceNo = Invoice,
+    UnitPrice = Price,
+    CustomerID = 'Customer ID'
+  ) %>%
+  filter(!grepl("^C",InvoiceNo)) %>%
+  filter(!is.na(CustomerID))%>%
+  mutate(revenue = Quantity*UnitPrice)
+
+# Preview data
+glimpse(retail_clean)
+summary(retail_clean$revenue)
+
+#Build RFM
+#step 1 : find snapshot date automatic from data
+snapshot_date <- max(as.Date(retail_clean$InvoiceDate))
+
+#step 2 : RFM calculation
+rfm_table <- retail_clean %>%
+  group_by(CustomerID) %>%
+  summarise(
+    Recency = as.numeric(snapshot_date - max(as.Date(InvoiceDate))),
+    Frequency = n_distinct(InvoiceNo),
+    Monetary = sum(revenue)
+  )%>%
+  ungroup()
+#Preview data
+glimpse(rfm_table)
+summary(rfm_table)
+
+#RFM scoring
+
+rfm_score <-rfm_table %>%
+  mutate(
+  R_score = ntile(-Recency, 5), #ยิ่ง recency น้อย -> ยิ่งได้คะแนนมาก
+  F_score = ntile(Frequency,5), #ยิ่งซื้อบ่อย -> ยิ่งได้คะแนนมาก
+  M_score = ntile(Monetary,5),  #ยิ่งซื้อเยอะ -> ยิ่งได้คะแนนมาก
+  RFM_score = paste0(R_score, F_score, M_score)
+  )
+glimpse(rfm_score)
+table(rfm_score$RFM_score)
+
+# RFM segment
+rfm_segmented <- rfm_score %>%
+  mutate(Segment = case_when(
+    RFM_score == "555" ~ "VIP",
+    R_score == 5 & F_score >= 3 ~ "Recent Loyal",
+    R_score <=2 & F_score <=2 & M_score <= 2 ~ "lost",
+    R_score <=2 & F_score >=4 ~ "At Risk Loyal",
+    F_score == 5 & M_score == 5 ~"Big Spender",
+    TRUE ~ "Others"
+  ))
+
+table(rfm_segmented$Segment)
+#Visualize ด้วย Bar Plot
+
+ggplot(rfm_segmented, aes(x = Segment)) +
+  geom_bar(fill = "Steelblue") +
+  labs(title = "Customer Segment by RFM Score",
+       x = "Customer segment",
+       y = "Number of Customers")+
+  theme_minimal()
+
+#K-Means Clustering ด้วย R
+# step 1 Prepare data
+rfm_for_cluster <- rfm_table %>% select(Recency, Frequency, Monetary)
+
+# step 2 standardize data
+rfm_scaled <- scale(rfm_for_cluster)
+
+# step 3 find suitable K (Elbow Method)
+
+
+wss <- map_dbl(1:10, function(k){
+  kmeans(rfm_scaled, center = k, nstart = 25)$tot.withinss
+})
+plot(1:10, wss, type = "b", pch = 19,
+     xlab = "Number of Clusters K",
+     ylab = "Total Within-Cluster Sum of Squre")
+
+# 4. Fit K-Means by K from previous graph which is 3
+set.seed(123)
+kmeans_result <- kmeans(rfm_scaled, center = 3, nstart = 25)
+
+# 5. returen Cluster back to dataset
+rfm_clustered <- rfm_table %>% 
+  mutate(Cluster = as.factor(kmeans_result$cluster))
+# 6. Cluster analysis
+
+rfm_clustered %>%
+  group_by(Cluster) %>%
+  summarise(
+    Avg_Recency = mean(Recency),
+    Avg_Frequency = mean(Frequency),
+    Avg_Monetary = mean(Monetary),
+    Count = n()
+  )
+# 7. scatter plot
+library(ggplot2)
+
+ggplot(rfm_clustered, aes(x = Recency, y = Monetary, color = Cluster)) +
+  geom_point(alpha = 0.6, size = 2) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Customer Segmentation by K-Means Clustering",
+       x = "Recency (days since last purchase)",
+       y = "Monetary (Total Spend)") +
+  theme_minimal()
+
+ggplot(rfm_clustered, aes(x = Frequency, y = Monetary, color = Cluster))+
+  geom_point(alpha = 0.6, size = 2 )+
+  scale_color_brewer(palette = "Set1")+
+  labs(title = "Customer Segmentation by K-Means Clustering",
+       x = "Frequency (buying repeatition)",
+       y = "Monetary (Total Spend)")+
+  theme_minimal()
+
+
+# Insight
+- Cluster 1: At Risk or Dormant — long time no purchase, low spend
+- Cluster 2: Loyal Regulars — moderate frequency and spend
+- Cluster 3: VIPs — high value and recent activity
+
+
+# Insight Summary
+
+- **Cluster 1** (Dormant): Needs reactivation campaign
+- **Cluster 2** (Moderate): Upsell with loyalty incentives
+- **Cluster 3** (VIP): Retain & engage with premium experiences
+
+# Real-World Strategies
+
+| Cluster | Strategy | Tools |
+  |--------|----------|-------|
+  | Dormant | Win-back offer | Mailchimp, Facebook Ads |
+  | Moderate | Loyalty upgrade | CRM, Loyalty Tools |
+  | VIP | Exclusive invite | LINE OA, Referral Tools |
+  
+  # Key Takeaway
+  
+  K-means enables segmentation without relying on static rules, letting the data reveal behavioral groups naturally.
